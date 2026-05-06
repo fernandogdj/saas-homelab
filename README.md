@@ -169,16 +169,5 @@ docker compose down -v
 4. Migrar para VPS (Hetzner ~€4–10/mês) com 3+ clientes
 5. Adicionar autenticação centralizada com Authelia ou Authentik
 
----
 
-## 💰 Modelo de negócio sugerido
-
-| Plano       | Preço/mês | Inclui                                    |
-|-------------|-----------|-------------------------------------------|
-| Starter     | R$ 197    | 1 app, backups, monitoramento             |
-| Business    | R$ 397    | Até 3 apps, n8n, dashboard, SLA           |
-| Premium     | R$ 797    | Stack completa, integrações, suporte prio |
-
----
-
-Gerado com Claude — stack testada em Homelab com Portainer + Docker Compose
+Stack testada em Homelab com Portainer + Docker Compose
