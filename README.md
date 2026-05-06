@@ -161,13 +161,5 @@ docker compose down -v
 
 ---
 
-## 📈 Próximos passos (uso comercial)
-
-1. Comprar domínio (Registro.br ~R$40/ano) e adicionar Traefik + TLS
-2. Configurar SMTP no Listmonk e Outline
-3. Configurar alertas no Uptime Kuma (Telegram, e-mail)
-4. Migrar para VPS (Hetzner ~€4–10/mês) com 3+ clientes
-5. Adicionar autenticação centralizada com Authelia ou Authentik
-
 
 Stack testada em Homelab com Portainer + Docker Compose
