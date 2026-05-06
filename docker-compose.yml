@@ -1,0 +1,251 @@
+version: "3.8"
+
+# =============================================================
+# MANAGED SELF-HOSTING STACK — Modo Homelab (sem domínio)
+# Serviços: n8n · Uptime Kuma · Listmonk · Outline
+# Deps:     PostgreSQL · Redis · MinIO
+# =============================================================
+# PRÉ-REQUISITOS:
+#   1. cp .env.example .env && nano .env
+#   2. docker compose up -d
+#   3. Inicializar Listmonk (só na 1ª vez):
+#      docker compose run --rm listmonk ./listmonk --install
+# =============================================================
+# PORTAS
+#   n8n          → :5678
+#   Uptime Kuma  → :3001
+#   Listmonk     → :9000
+#   Outline      → :3000
+#   MinIO UI     → :9001
+# =============================================================
+
+networks:
+  internal:
+
+volumes:
+  n8n_data:
+  uptime_kuma_data:
+  postgres_data:
+  redis_data:
+  minio_data:
+  listmonk_uploads:
+
+services:
+
+  # -----------------------------------------------------------
+  # POSTGRESQL — banco compartilhado por Listmonk e Outline
+  # -----------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres
+    restart: unless-stopped
+    networks:
+      - internal
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_MULTIPLE_DATABASES: listmonk,outline   # script abaixo cria os dois DBs
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -----------------------------------------------------------
+  # REDIS — usado pelo Outline
+  # -----------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    networks:
+      - internal
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # -----------------------------------------------------------
+  # MINIO — storage de arquivos para o Outline (S3 compatível)
+  # UI: http://IP_DO_SERVIDOR:9001  (admin / senha do .env)
+  # -----------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: unless-stopped
+    networks:
+      - internal
+    ports:
+      - "9001:9001"   # console web
+    environment:
+      MINIO_ROOT_USER: ${MINIO_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # -----------------------------------------------------------
+  # MINIO SETUP — cria o bucket "outline" automaticamente
+  # -----------------------------------------------------------
+  minio-setup:
+    restart: "no"
+    image: minio/mc:latest
+    container_name: minio-setup
+    networks:
+      - internal
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_USER} ${MINIO_PASSWORD};
+        mc mb --ignore-existing local/outline;
+        mc anonymous set download local/outline;
+        exit 0;
+      "
+
+  # -----------------------------------------------------------
+  # N8N — Automação
+  # Acesso: http://IP_DO_SERVIDOR:5678
+  # -----------------------------------------------------------
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    networks:
+      - internal
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=${SERVER_IP}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://${SERVER_IP}:5678/
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - GENERIC_TIMEZONE=${TZ}
+      - TZ=${TZ}
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=720
+      - N8N_SECURE_COOKIE=false   # necessário para acesso via HTTP sem TLS
+    volumes:
+      - n8n_data:/home/node/.n8n
+
+  # -----------------------------------------------------------
+  # UPTIME KUMA — Monitoramento
+  # Acesso: http://IP_DO_SERVIDOR:3001
+  # -----------------------------------------------------------
+  uptime-kuma:
+    image: louislam/uptime-kuma:1
+    container_name: uptime-kuma
+    restart: unless-stopped
+    networks:
+      - internal
+    ports:
+      - "3001:3001"
+    volumes:
+      - uptime_kuma_data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  # -----------------------------------------------------------
+  # LISTMONK — E-mail Marketing (substitui Mailchimp)
+  # Acesso: http://IP_DO_SERVIDOR:9000
+  # 1ª vez: docker compose run --rm listmonk ./listmonk --install
+  # -----------------------------------------------------------
+  listmonk:
+    image: listmonk/listmonk:latest
+    container_name: listmonk
+    restart: unless-stopped
+    networks:
+      - internal
+    ports:
+      - "9000:9000"
+    environment:
+      LISTMONK_app__address: "0.0.0.0:9000"
+      LISTMONK_db__host: postgres
+      LISTMONK_db__port: 5432
+      LISTMONK_db__user: ${PG_USER}
+      LISTMONK_db__password: ${PG_PASSWORD}
+      LISTMONK_db__database: listmonk
+      LISTMONK_db__ssl_mode: disable
+    volumes:
+      - listmonk_uploads:/listmonk/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # -----------------------------------------------------------
+  # OUTLINE — Wiki / Base de Conhecimento (substitui Notion)
+  # Acesso: http://IP_DO_SERVIDOR:3000
+  # -----------------------------------------------------------
+  outline:
+    image: outlinewiki/outline:0.76.1
+    container_name: outline
+    restart: unless-stopped
+    networks:
+      - internal
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - SECRET_KEY=${OUTLINE_SECRET_KEY}
+      - UTILS_SECRET=${OUTLINE_UTILS_SECRET}
+      - PGSSLMODE=disable
+      - DATABASE_URL=postgres://${PG_USER}:${PG_PASSWORD}@postgres:5432/outline
+      - REDIS_URL=redis://redis:6379/0
+      - URL=http://${SERVER_IP}:3000
+      - PORT=3000
+      - AWS_ACCESS_KEY_ID=${MINIO_USER}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_PASSWORD}
+      - AWS_REGION=us-east-1
+      - AWS_S3_UPLOAD_BUCKET_URL=http://minio:9000
+      - AWS_S3_UPLOAD_BUCKET_NAME=outline
+      - AWS_S3_FORCE_PATH_STYLE=true
+      - AWS_S3_ACL=private
+      - ENABLE_UPDATES=false
+      - WEB_CONCURRENCY=1
+      - FILE_STORAGE_IMPORT_MAX_SIZE=5120000
+      - DEFAULT_LANGUAGE=pt_BR
+      - FORCE_HTTPS=false
+      - RATE_LIMITER_ENABLED=false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+
+  # -----------------------------------------------------------
+  # BACKUP — todos os volumes, diário às 03:00, retém 14 dias
+  # -----------------------------------------------------------
+  backup:
+    image: offen/docker-volume-backup:v2
+    container_name: backup
+    restart: unless-stopped
+    networks:
+      - internal
+    environment:
+      BACKUP_CRON_EXPRESSION: "0 3 * * *"
+      BACKUP_RETENTION_DAYS: "14"
+      BACKUP_FILENAME: "backup-%Y-%m-%dT%H-%M-%S.tar.gz"
+    volumes:
+      - n8n_data:/backup/n8n_data:ro
+      - uptime_kuma_data:/backup/uptime_kuma_data:ro
+      - postgres_data:/backup/postgres_data:ro
+      - minio_data:/backup/minio_data:ro
+      - listmonk_uploads:/backup/listmonk_uploads:ro
+      - ./backups:/archive
+      - /var/run/docker.sock:/var/run/docker.sock:ro
